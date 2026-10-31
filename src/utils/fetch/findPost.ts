@@ -14,6 +14,19 @@ function extractMedia(post: any): MediaItem[] {
   if (post.video_versions && post.video_versions.length > 0) {
     return [{ url: post.video_versions[0].url, kind: "video" }];
   }
+  const linkedReelUrl = post.text_post_app_info?.link_preview_attachment?.url;
+  const linkedReelId =
+    typeof linkedReelUrl == "string"
+      ? linkedReelUrl.match(/instagram\.com\/reels?\/([^/?#]+)/i)?.[1]
+      : undefined;
+  if (linkedReelId) {
+    return [
+      {
+        url: `https://ig.210403.xyz/videos/${linkedReelId}/1`,
+        kind: "video",
+      },
+    ];
+  }
   if (post.image_versions2?.candidates?.length > 0) {
     return [{ url: post.image_versions2.candidates[0].url, kind: "image" }];
   }
@@ -197,7 +210,16 @@ async function findPost({
   let images;
   let vidData: VideoProps[] = [];
   let imgType = "";
-  let hasReel = false;
+  const linkedReelUrl =
+    postObj.post.text_post_app_info.link_preview_attachment?.url;
+  const linkedReelId =
+    typeof linkedReelUrl == "string"
+      ? linkedReelUrl.match(/instagram\.com\/reels?\/([^/?#]+)/i)?.[1]
+      : undefined;
+  const linkedReelVideoUrl = linkedReelId
+    ? `https://ig.210403.xyz/videos/${linkedReelId}/1`
+    : undefined;
+  let hasReel = Boolean(linkedReelVideoUrl);
   if (postObj.post.carousel_media && postObj.post.carousel_media.length > 0) {
     images = postObj.post.carousel_media
       .map((item: any) => {
@@ -215,13 +237,7 @@ async function findPost({
     postObj.post.text_post_app_info.link_preview_attachment &&
     postObj.post.text_post_app_info.link_preview_attachment.image_url
   ) {
-    if (
-      postObj.post.text_post_app_info.link_preview_attachment.url &&
-      postObj.post.text_post_app_info.link_preview_attachment.url.includes(
-        "instagram.com/reel"
-      )
-    ) {
-      hasReel = true;
+    if (linkedReelVideoUrl) {
       images = [
         {
           url: postObj.post.text_post_app_info.link_preview_attachment.image_url,
@@ -254,16 +270,11 @@ async function findPost({
       imgType = "single";
     }
   }
-  if (hasReel && postObj.post.text_post_app_info.link_preview_attachment?.url) {
-    let reelId = postObj.post.text_post_app_info.link_preview_attachment.url
-      .split("/reel/")[1]
-      .split("/")[0];
-    if (reelId) {
-      vidData.push({
-        url: `https://ig.210403.xyz/reel/${reelId}/`,
-        type: "ddinstagram",
-      });
-    }
+  if (hasReel && linkedReelVideoUrl) {
+    vidData.push({
+      url: linkedReelVideoUrl,
+      type: "ddinstagram",
+    });
   }
 
   /* Handle Videos */
