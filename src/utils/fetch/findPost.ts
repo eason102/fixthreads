@@ -260,7 +260,7 @@ async function findPost({
       .split("/")[0];
     if (reelId) {
       vidData.push({
-        url: `https://kkinstagram.com/reel/${reelId}/`,
+        url: `https://ig.210403.xyz/reel/${reelId}/`,
         type: "ddinstagram",
       });
     }
