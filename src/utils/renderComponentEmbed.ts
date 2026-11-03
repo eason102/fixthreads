@@ -216,10 +216,7 @@ function buildPost(content: ContentProps, src: SlotUrl, level: Level) {
     separator(false, 1),
     {
       type: 1,
-      components: [
-        linkButton("Open on Threads", postUrl),
-        linkButton(`@${content.username}`, profileUrl),
-      ],
+      components: [linkButton("Open on Threads", postUrl)],
     }
   );
 
