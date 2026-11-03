@@ -81,12 +81,29 @@ async function runIgLogin(trialUser: (typeof users)[number]) {
     writeTokenFile();
     return tokenStore;
   } catch (e) {
-    console.error(`[LOGIN] failed for ${trialUser.username}`, e);
+    const error = e as any;
+    let message = typeof error?.message == "string" ? error.message : "none";
+    for (const secret of [
+      trialUser.username,
+      trialUser.password,
+      trialUser.deviceId,
+    ]) {
+      if (secret) message = message.split(secret).join("[redacted]");
+    }
+    message = message.replace(/https?:\/\/\S+/g, "[url]").slice(0, 180);
+    console.error(
+      `[LOGIN] failed error=${error?.name ?? "unknown"} status=${error?.response?.status ?? "none"} code=${error?.code ?? "none"} message=${message}`
+    );
     return false;
   }
 }
 
 async function loginAnyUser() {
+  if (!users.length) {
+    console.error("[LOGIN] no configured accounts");
+    lastLoginFailure = Date.now();
+    return false;
+  }
   for (const user of users) {
     const result = await runIgLogin(user);
     if (result) return result;
