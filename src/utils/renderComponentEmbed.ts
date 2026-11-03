@@ -146,7 +146,7 @@ function buildPost(content: ContentProps, src: SlotUrl, level: Level) {
 
   const headerTexts = [
     text(
-      `### [@${content.username}](${profileUrl})${content.verified ? VERIFIED : ""}\n-# Threads`
+      `### [@${content.username}](${profileUrl})${content.verified ? VERIFIED : ""}`
     ),
   ];
   if (content.replyTo) {
@@ -246,7 +246,7 @@ function buildProfile(content: ContentProps) {
   const name = escapeMarkdown(content.fullName || content.username);
   const texts = [
     text(
-      `## ${name}${content.verified ? VERIFIED : ""}\n-# [@${content.username}](${profileUrl}) · Threads`
+      `## ${name}${content.verified ? VERIFIED : ""}\n-# [@${content.username}](${profileUrl})`
     ),
   ];
   if (content.description) texts.push(text(richText(content.description)));
