@@ -64,16 +64,9 @@ const linkButton = (label: string, url: string) => ({
   url,
 });
 
-/** Section with an avatar thumbnail, or the bare text displays if there is no avatar. */
-function section(texts: TextDisplay[], avatar?: string, alt?: string) {
-  if (!avatar) return texts;
-  return [
-    {
-      type: 9,
-      components: texts,
-      accessory: { type: 11, media: { url: avatar }, description: alt },
-    },
-  ];
+/** Bare text displays: avatars are intentionally hidden so every Rinai embed shares one layout. */
+function section(texts: TextDisplay[], _avatar?: string, _alt?: string) {
+  return texts;
 }
 
 /** Real URL of every media slot in a post's embed: a/qa = avatars, 0-9/q0-q9 = gallery items. */
@@ -153,7 +146,7 @@ function buildPost(content: ContentProps, src: SlotUrl, level: Level) {
 
   const headerTexts = [
     text(
-      `### [@${content.username}](${profileUrl})${content.verified ? VERIFIED : ""}`
+      `### [@${content.username}](${profileUrl})${content.verified ? VERIFIED : ""}\n-# Threads`
     ),
   ];
   if (content.replyTo) {
