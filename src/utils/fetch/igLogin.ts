@@ -63,6 +63,34 @@ function writeTokenFile() {
     return false;
   }
 }*/
+/* threads-api reads the password encryption key from /api/v1/qe/sync/, which Instagram removed
+   (404). /api/v1/launcher/sync/ still returns the same ig-set-password-encryption-* headers. */
+async function passwordKeyHeaders() {
+  const res = await fetch("https://i.instagram.com/api/v1/launcher/sync/", {
+    method: "POST",
+    headers: {
+      "User-Agent": "Barcelona 291.0.0.31.111 Android",
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Ig-App-Id": "238260118697367",
+    },
+    body:
+      "signed_body=SIGNATURE." +
+      encodeURIComponent(
+        JSON.stringify({ id: crypto.randomUUID(), server_config_retrieval: "1" })
+      ),
+  });
+  const keyId = res.headers.get("ig-set-password-encryption-key-id");
+  const pubKey = res.headers.get("ig-set-password-encryption-pub-key");
+  if (!keyId || !pubKey)
+    throw new Error(`launcher/sync returned no password key (status ${res.status})`);
+  return {
+    headers: {
+      "ig-set-password-encryption-key-id": keyId,
+      "ig-set-password-encryption-pub-key": pubKey,
+    },
+  };
+}
+
 async function runIgLogin(trialUser: (typeof users)[number]) {
   try {
     const threads = new ThreadsAPI({
@@ -70,6 +98,7 @@ async function runIgLogin(trialUser: (typeof users)[number]) {
       password: trialUser.password,
       deviceID: trialUser.deviceId || undefined,
     });
+    (threads as any).syncLoginExperiments = passwordKeyHeaders;
     await threads.login();
     if (!threads.token) return false;
 
