@@ -3,10 +3,20 @@ import { login, refreshToken } from "./igLogin";
 const proxy = process.env.API_PROXY;
 const INITIAL_GRAPHQL_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_GRAPHQL_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-let graphqlCooldownUntil = 0;
-let nextGraphqlCooldownMs = INITIAL_GRAPHQL_COOLDOWN_MS;
+/* Anonymous and logged-in lookups are rate limited separately: a 429 on the anonymous
+   (proxied) request moves lookups to the account instead of stopping them all. */
+type Cooldown = { until: number; next: number };
+const anonCooldown: Cooldown = { until: 0, next: INITIAL_GRAPHQL_COOLDOWN_MS };
+const authCooldown: Cooldown = { until: 0, next: INITIAL_GRAPHQL_COOLDOWN_MS };
 
-function applyGraphqlCooldown(response: Response) {
+function resetCooldown(cooldown: Cooldown) {
+  cooldown.until = 0;
+  cooldown.next = INITIAL_GRAPHQL_COOLDOWN_MS;
+}
+
+const readJson = (response: Response) => response.json().catch(() => null);
+
+function applyGraphqlCooldown(cooldown: Cooldown, response: Response) {
   const retryAfter = response.headers.get("retry-after");
   let cooldownMs = 0;
   if (retryAfter) {
@@ -18,12 +28,9 @@ function applyGraphqlCooldown(response: Response) {
       if (Number.isFinite(retryAt)) cooldownMs = Math.max(0, retryAt - Date.now());
     }
   }
-  if (!cooldownMs) cooldownMs = nextGraphqlCooldownMs;
-  graphqlCooldownUntil = Date.now() + cooldownMs;
-  nextGraphqlCooldownMs = Math.min(
-    nextGraphqlCooldownMs * 2,
-    MAX_GRAPHQL_COOLDOWN_MS
-  );
+  if (!cooldownMs) cooldownMs = cooldown.next;
+  cooldown.until = Date.now() + cooldownMs;
+  cooldown.next = Math.min(cooldown.next * 2, MAX_GRAPHQL_COOLDOWN_MS);
   return cooldownMs;
 }
 
@@ -95,38 +102,41 @@ async function findPost({
   }
 
   let finalFormBody = formBody.join("&");
-  if (Date.now() < graphqlCooldownUntil) {
+  // 0 = the anonymous request was skipped because of its cooldown
+  let anonStatus = 0;
+  let fetchThreadsAPIJson: any = null;
+  if (Date.now() < anonCooldown.until) {
     console.log(
-      `[POST FETCH] post=${post} graphql_cooldown_ms=${graphqlCooldownUntil - Date.now()}`
+      `[POST FETCH] post=${post} anon_cooldown_ms=${anonCooldown.until - Date.now()} using=auth`
     );
-    return false;
+  } else {
+    const fetchThreadsAPI = await fetch(`https://www.threads.com/api/graphql`, {
+      method: "POST",
+      headers: {
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": " same-origin",
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "X-Fb-Lsd": "hgmSkqDnLNFckqa7t1vJdn",
+        "X-Ig-App-Id": "238260118697367",
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: finalFormBody,
+      proxy,
+    });
+    anonStatus = fetchThreadsAPI.status;
+    fetchThreadsAPIJson = await readJson(fetchThreadsAPI);
+    if (anonStatus == 429) {
+      fetchThreadsAPIJson = null;
+      const cooldownMs = applyGraphqlCooldown(anonCooldown, fetchThreadsAPI);
+      console.log(
+        `[POST FETCH] post=${post} status=429 anon_cooldown_ms=${cooldownMs} using=auth`
+      );
+    } else if (hasPost(fetchThreadsAPIJson)) {
+      resetCooldown(anonCooldown);
+    }
   }
-  let fetchThreadsAPI = await fetch(`https://www.threads.com/api/graphql`, {
-    method: "POST",
-    headers: {
-      "Sec-Fetch-Mode": "cors",
-      "Sec-Fetch-Site": " same-origin",
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-      "X-Fb-Lsd": "hgmSkqDnLNFckqa7t1vJdn",
-      "X-Ig-App-Id": "238260118697367",
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: finalFormBody,
-    proxy,
-  });
-  let fetchThreadsAPIJson: any = await fetchThreadsAPI.json();
-  if (fetchThreadsAPI.status == 429) {
-    const cooldownMs = applyGraphqlCooldown(fetchThreadsAPI);
-    console.log(
-      `[POST FETCH] post=${post} status=429 graphql_cooldown_ms=${cooldownMs}`
-    );
-    return false;
-  }
-  if (hasPost(fetchThreadsAPIJson)) {
-    graphqlCooldownUntil = 0;
-    nextGraphqlCooldownMs = INITIAL_GRAPHQL_COOLDOWN_MS;
-  }
+  const anonLimited = anonStatus == 0 || anonStatus == 429;
 
   // Login-gated posts come back as an empty edges list, throttled requests as a null body
   if (
@@ -134,6 +144,7 @@ async function findPost({
     !hasPost(fetchThreadsAPIJson)
   ) {
     if (
+      anonLimited ||
       !fetchThreadsAPIJson?.errors?.length ||
       fetchThreadsAPIJson.errors[0].summary == "Not Logged In" ||
       fetchThreadsAPIJson.errors[0].summary == "Not Found" ||
@@ -146,13 +157,14 @@ async function findPost({
         const loginDisabled = process.env.THREADS_LOGIN_DISABLED == "true";
         const newToken = loginDisabled ? false : await login();
         if (newToken == false) {
-          if (fetchThreadsAPI.status == 429) {
+          if (anonLimited) {
             console.log(
-              `[POST FETCH] post=${post} auth=${loginDisabled ? "disabled" : "unavailable"} status=429 retry=skipped`
+              `[POST FETCH] post=${post} auth=${loginDisabled ? "disabled" : "unavailable"} anon_status=${anonStatus || "cooldown"} retry=skipped`
             );
+            return false;
           } else {
             // Public post lookups can fail transiently; retry once without auth.
-            fetchThreadsAPI = await fetch(`https://www.threads.com/api/graphql`, {
+            const fetchThreadsAPI = await fetch(`https://www.threads.com/api/graphql`, {
               method: "POST",
               headers: {
                 "Sec-Fetch-Mode": "cors",
@@ -166,11 +178,12 @@ async function findPost({
               body: finalFormBody,
               proxy,
             });
-            fetchThreadsAPIJson = await fetchThreadsAPI.json();
+            anonStatus = fetchThreadsAPI.status;
+            fetchThreadsAPIJson = await readJson(fetchThreadsAPI);
             if (fetchThreadsAPI.status == 429) {
-              const cooldownMs = applyGraphqlCooldown(fetchThreadsAPI);
+              const cooldownMs = applyGraphqlCooldown(anonCooldown, fetchThreadsAPI);
               console.log(
-                `[POST FETCH] post=${post} retry_status=429 graphql_cooldown_ms=${cooldownMs}`
+                `[POST FETCH] post=${post} retry_status=429 anon_cooldown_ms=${cooldownMs}`
               );
               return false;
             }
@@ -181,6 +194,12 @@ async function findPost({
             }
           }
         } else {
+          if (Date.now() < authCooldown.until) {
+            console.log(
+              `[POST FETCH] post=${post} anon_status=${anonStatus || "cooldown"} auth_cooldown_ms=${authCooldown.until - Date.now()}`
+            );
+            return false;
+          }
           fetchWithAuth = await fetch(`https://www.threads.com/api/graphql`, {
             method: "POST",
             headers: {
@@ -196,14 +215,15 @@ async function findPost({
             body: finalFormBody,
             // No proxy: the account should keep the server's IP it logged in from
           });
-          fetchThreadsAPIJson = await fetchWithAuth.json();
+          fetchThreadsAPIJson = await readJson(fetchWithAuth);
           if (fetchWithAuth.status == 429) {
-            const cooldownMs = applyGraphqlCooldown(fetchWithAuth);
+            const cooldownMs = applyGraphqlCooldown(authCooldown, fetchWithAuth);
             console.log(
-              `[POST FETCH] post=${post} auth_status=429 graphql_cooldown_ms=${cooldownMs}`
+              `[POST FETCH] post=${post} auth_status=429 auth_cooldown_ms=${cooldownMs}`
             );
             return false;
           }
+          if (hasPost(fetchThreadsAPIJson)) resetCooldown(authCooldown);
         }
       } catch (e) {
         generalFetchAuthErr = true;
@@ -244,14 +264,15 @@ async function findPost({
               body: finalFormBody,
             }
           );
-          fetchThreadsAPIJson = await retryResponse.json();
+          fetchThreadsAPIJson = await readJson(retryResponse);
           if (retryResponse.status == 429) {
-            const cooldownMs = applyGraphqlCooldown(retryResponse);
+            const cooldownMs = applyGraphqlCooldown(authCooldown, retryResponse);
             console.log(
-              `[POST FETCH] post=${post} retry_status=429 graphql_cooldown_ms=${cooldownMs}`
+              `[POST FETCH] post=${post} auth_retry_status=429 auth_cooldown_ms=${cooldownMs}`
             );
             return false;
           }
+          if (hasPost(fetchThreadsAPIJson)) resetCooldown(authCooldown);
           if (!hasPost(fetchThreadsAPIJson)) {
             const summaries = (fetchThreadsAPIJson?.errors ?? [])
               .map((error: any) => error?.summary || error?.message)
@@ -269,7 +290,7 @@ async function findPost({
         .filter(Boolean)
         .join("; ");
       console.log(
-        `[POST FETCH] post=${post} status=${fetchThreadsAPI.status} errors=${summaries || "none"} edges=${fetchThreadsAPIJson?.data?.data?.edges?.length ?? 0}`
+        `[POST FETCH] post=${post} status=${anonStatus || "cooldown"} errors=${summaries || "none"} edges=${fetchThreadsAPIJson?.data?.data?.edges?.length ?? 0}`
       );
       return false;
     }
@@ -280,7 +301,7 @@ async function findPost({
       .filter(Boolean)
       .join("; ");
     console.log(
-      `[POST FETCH] post=${post} status=${fetchThreadsAPI.status} errors=${summaries || "none"} edges=${fetchThreadsAPIJson?.data?.data?.edges?.length ?? 0}`
+      `[POST FETCH] post=${post} status=${anonStatus || "cooldown"} errors=${summaries || "none"} edges=${fetchThreadsAPIJson?.data?.data?.edges?.length ?? 0}`
     );
     return false;
   }
