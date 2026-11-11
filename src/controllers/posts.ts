@@ -2,6 +2,7 @@ import express from "express";
 import findPost from "../utils/fetch/findPost";
 import resolveShare from "../utils/fetch/resolveShare";
 import renderSeo from "../utils/renderSeo";
+import renderNotFound from "../utils/renderNotFound";
 const router = express.Router();
 
 function threadsPostUrl(username: string | undefined, post: string) {
@@ -29,12 +30,19 @@ router.get("/t/:post", async (req, res, _next) => {
 });
 
 router.get("/share/:share", async (req, res, _next) => {
-  const { share } = req.params;
+  // Links pasted inside Markdown can arrive with trailing ")_" etc.
+  const share = req.params.share.match(/^[A-Za-z0-9_-]+/)?.[0];
+  if (!share) return res.redirect("https://www.threads.com/");
+  const shareUrl = `https://www.threads.com/share/${share}/`;
   try {
     const resolved = await resolveShare(share);
+    if (resolved && "notFound" in resolved) {
+      console.log(`[NOT FOUND] share=${share} deleted_or_private`);
+      return res.send(renderNotFound(shareUrl));
+    }
     if (!resolved) {
       console.log(`[NOT FOUND] share=${share}`);
-      return res.redirect(`https://www.threads.com/share/${share}/`);
+      return res.redirect(shareUrl);
     }
     const data = await findPost({
       post: resolved.post,
@@ -47,7 +55,7 @@ router.get("/share/:share", async (req, res, _next) => {
     return res.send(renderSeo({ type: "post", content: data }, `https://${req.get("host")}`));
   } catch (e: any) {
     console.error(`[ERROR] share=${share}`, e?.message ?? e);
-    return res.redirect(`https://www.threads.com/share/${share}/`);
+    return res.redirect(shareUrl);
   }
 });
 

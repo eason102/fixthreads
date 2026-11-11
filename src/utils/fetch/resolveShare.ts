@@ -8,6 +8,15 @@ const BROWSER_UA =
 const POST_URL_REGEX =
   /threads\.(?:com|net)\/(?:@([\w.]+)\/post|t)\/([A-Za-z0-9_-]+)/;
 
+// Threads renders this root server-side when the share target is gone
+// (deleted, private, or an invalid share code).
+const NOT_FOUND_ROOT = '"__roots":[{"__dr":"Barcelona404ErrorRoot';
+
+export type ShareResult =
+  | { username: string | undefined; post: string }
+  | { notFound: true }
+  | null;
+
 function matchPostUrl(text: string) {
   // JSON-embedded URLs escape slashes (threads.com\/@user\/post\/CODE)
   const match = text.replace(/\\\//g, "/").match(POST_URL_REGEX);
@@ -15,7 +24,7 @@ function matchPostUrl(text: string) {
   return { username: match[1] as string | undefined, post: match[2] };
 }
 
-async function resolveShare(share: string) {
+async function resolveShare(share: string): Promise<ShareResult> {
   const shareUrl = `https://www.threads.com/share/${share}/`;
 
   // Threads sends a 302 to the canonical post URL for non-browser user
@@ -53,8 +62,13 @@ async function resolveShare(share: string) {
     });
     const fromFinalUrl = matchPostUrl(res.url);
     if (fromFinalUrl) return fromFinalUrl;
-    const fromBody = matchPostUrl(await res.text());
+    const body = await res.text();
+    const fromBody = matchPostUrl(body);
     if (fromBody) return fromBody;
+    if (body.includes(NOT_FOUND_ROOT)) {
+      console.log(`[SHARE] share=${share} threads returned its 404 page`);
+      return { notFound: true };
+    }
     console.log(
       `[SHARE] share=${share} fallback failed status=${res.status} finalUrl=${res.url}`
     );
